@@ -40,11 +40,39 @@
  * we use floating point arithmetic.
  */
 
+ /*
+
+ Baseline performance
+ ndj-mbp-4:libjpeg-turbo-idct nathanael$ time build/djpeg -bmp -scale 1/8 snow.jpeg > /dev/null
+
+real  0m0.247s
+user  0m0.217s
+sys 0m0.025s
+
+Naive implementation:
+ndj-mbp-4:libjpeg-turbo-idct nathanael$ time build/djpeg -bmp -scale 1/8 snow.jpeg > /dev/null
+
+real  0m0.886s
+user  0m0.852s
+sys 0m0.027s
+
+When active for channels != 2,3, using an approximate pow function
+
+ndj-mbp-4:libjpeg-turbo-idct nathanael$ time build/djpeg -scale 1/8 snow.jpeg > /dev/null
+
+real  0m0.309s
+user  0m0.281s
+sys 0m0.024s
+
+*/
+
+
 #define JPEG_INTERNALS
 #include "jinclude.h"
 #include "jpeglib.h"
 #include "jdct.h"               /* Private declarations for DCT subsystem */
 #include "math.h"
+#include "fastapprox.h"
 
 #ifdef DCT_FLOAT_SUPPORTED
 
@@ -65,42 +93,39 @@
 #define DEQUANTIZE(coef,quantval)  (((FAST_FLOAT) (coef)) * (quantval))
 
 
+
+static inline float linear_to_srgb(float x)
+{
+  // Gamma correction
+  // http://www.4p8.com/eric.brasseur/gamma.html#formulas
+  if (x < 0.0f) return 0;
+  if (x > 1.0f) return 255.0f;
+  float r = 255.0f * fasterpow(x, 1.0f / 2.2f);
+  //return 255.0f * (float)pow(clr, 1.0f / 2.2f);
+  //printf("Linear %f to srgb %f\n", x, r);
+  return r;
+}
+
+//THIS IS THE HOTSPOT - 90% of performance to be extracted is here
+//https://stackoverflow.com/questions/6475373/optimizations-for-pow-with-const-non-integer-exponent
+//Chebychev approximations could likely eliminate this hotspot
+static inline float srgb_to_linear(float s)
+{ 
+  if (s > 255.0f) return 1.0f;
+  if (s < 0.0f) return 0.0f;
+  //return (float)pow(s / 255.0f, 2.2f);
+
+  float r = fasterpow(s / 255.0f, 2.2f);
+  //printf("Srgb %f to linear %f\n", s, r);
+  return r;
+}
+
+
 /*
  * Perform dequantization and inverse DCT on one block of coefficients.
  */
 
-static inline float linear_to_srgb(float clr)
-{
-  // Gamma correction
-  // http://www.4p8.com/eric.brasseur/gamma.html#formulas
-  float r = 0;
-  if (clr < 0.0f) return 0;
 
-  if (clr <= 0.0031308f){
-      r =  12.92f * clr * 255.0f;
-  }else{
-    // a = 0.055; ret ((1+a) * s**(1/2.4) - a) * 255
-    r =  1.055f * 255.0f * ((float)pow(clr, 0.41666666f)) - 14.025f;
-  }
-  //if (clr < 0 || clr > 1 || r > 255.0f || r < 0.0f) printf("Linear %f to srgb %f\n", clr, r);
-  return r;
-}
-
-static inline float srgb_to_linear(float s)
-{ 
-  float old = s;
-  s = s / 255.0f;
-  if (s > 1.0f) return 1.0f;
-  if (s < 0.0f) return 0.0f;
-
-  if (s <= 0.04045f)
-      s = s / 12.92f;
-  else
-      s = (float)pow((s + 0.055f) / (1 + 0.055f), 2.4f);
-
-  //if (s > 1.0f || s < 0.0f) printf("Srgb %f to linear %f\n", old, s);
-  return s;
-}
 
 GLOBAL(void) jpeg_idct_1_4_8_float (j_decompress_ptr cinfo, jpeg_component_info * compptr,
                  JCOEFPTR coef_block,
@@ -271,30 +296,39 @@ GLOBAL(void) jpeg_idct_1_4_8_float (j_decompress_ptr cinfo, jpeg_component_info 
     wsptr += DCTSIZE;           /* advance pointer to next row */
   }
   
-  //Downscale and set output values
-  int target_size = compptr->DCT_scaled_size;
-  int input_pixels_window = (8 / target_size);
-  float sum_divisor = (float)((8 / target_size) * (8 / target_size));
-  //printf("Scaling %ix%i pixels to one. Scaled block size: %ix%i. Divisor of sums: %.2f", 
-  //  input_pixels_window, input_pixels_window, target_size, target_size, sum_divisor);
 
-  for (ctr = 0; ctr < target_size; ctr++) {
-    outptr = output_buf[ctr] + output_col;
-    for (ctr_x = 0; ctr_x < target_size; ctr_x++){
-      linear_light_ptr = &linear_light[ctr * input_pixels_window * DCTSIZE + ctr_x * input_pixels_window];
-      float sum = 0;
-      for (linear_light_y = 0; linear_light_y < input_pixels_window; linear_light_y++){
-        for (linear_light_x = 0; linear_light_x < input_pixels_window; linear_light_x++){
-          float value = linear_light_ptr[linear_light_x];
-          //printf("Adding %0.4f to %0.4f for %i,%i of output pixel %i,%i\n",
-          //        value, sum, linear_light_x, linear_light_y, ctr_x, ctr);
-          sum += value; //linear_light_ptr[linear_light_y * DCTSIZE + linear_light_x];
-        }
-        linear_light_ptr += DCTSIZE;
-      }
-      outptr[ctr_x] = range_limit[((int)linear_to_srgb(sum / sum_divisor)) & RANGE_MASK];
-    }
+  //Downscale and set output values
+  //Inlining and permitting those 4 loops to be unrolled
+  //Didn't actually help too much, but it probably will
+  //On less advanced compilers.
+#define SCALE_DOWN(target_size, input_pixels_window) \
+  for (ctr = 0; ctr < target_size; ctr++) { \
+    outptr = output_buf[ctr] + output_col; \
+    for (ctr_x = 0; ctr_x < target_size; ctr_x++){ \
+      linear_light_ptr = &linear_light[ctr * input_pixels_window * DCTSIZE \
+                                        + ctr_x * input_pixels_window]; \
+      float sum = 0;                                                    \
+      for (linear_light_y = 0; linear_light_y < input_pixels_window; linear_light_y++){ \
+        for (linear_light_x = 0; linear_light_x < input_pixels_window; linear_light_x++){ \
+          sum += linear_light_ptr[linear_light_x]; \
+        } \
+        linear_light_ptr += DCTSIZE; \
+      }  \
+      outptr[ctr_x] = range_limit[((int)linear_to_srgb(sum / (float)(input_pixels_window * input_pixels_window))) & RANGE_MASK]; \
+    } \
+  } \
+
+
+  if (compptr->DCT_scaled_size == 1) {
+    SCALE_DOWN(1, 8)
+  } else if (compptr->DCT_scaled_size == 2) {
+    SCALE_DOWN(2, 4)
+  } else if (compptr->DCT_scaled_size == 4) {
+    SCALE_DOWN(4, 2)
+  } else {
+    exit (42);
   }
 }
+
 
 #endif /* DCT_FLOAT_SUPPORTED */

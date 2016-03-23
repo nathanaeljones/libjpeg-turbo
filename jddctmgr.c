@@ -103,10 +103,11 @@ start_pass (j_decompress_ptr cinfo)
   inverse_DCT_method_ptr method_ptr = NULL;
   JQUANT_TBL *qtbl;
 
-  int favor_linear_scaling = 0;
-
+  
   for (ci = 0, compptr = cinfo->comp_info; ci < cinfo->num_components;
        ci++, compptr++) {
+    int favor_linear_scaling = compptr->component_id != 2 && compptr->component_id != 3;
+
     /* Select the proper IDCT routine for this component's scaling */
     switch (compptr->_DCT_scaled_size) {
 #ifdef IDCT_SCALING_SUPPORTED
