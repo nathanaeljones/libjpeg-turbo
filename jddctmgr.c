@@ -103,32 +103,49 @@ start_pass (j_decompress_ptr cinfo)
   inverse_DCT_method_ptr method_ptr = NULL;
   JQUANT_TBL *qtbl;
 
+  int favor_linear_scaling = 0;
+
   for (ci = 0, compptr = cinfo->comp_info; ci < cinfo->num_components;
        ci++, compptr++) {
     /* Select the proper IDCT routine for this component's scaling */
     switch (compptr->_DCT_scaled_size) {
 #ifdef IDCT_SCALING_SUPPORTED
     case 1:
-      method_ptr = jpeg_idct_1x1;
-      method = JDCT_ISLOW;      /* jidctred uses islow-style table */
+      if (favor_linear_scaling){
+        method_ptr = jpeg_idct_1_4_8_float;
+        method= JDCT_FLOAT;
+      }else{
+        method_ptr = jpeg_idct_1x1;
+        method = JDCT_ISLOW;      /* jidctred uses islow-style table */
+      }
       break;
     case 2:
-      if (jsimd_can_idct_2x2())
-        method_ptr = jsimd_idct_2x2;
-      else
-        method_ptr = jpeg_idct_2x2;
-      method = JDCT_ISLOW;      /* jidctred uses islow-style table */
+    if (favor_linear_scaling){
+        method_ptr = jpeg_idct_1_4_8_float;
+        method= JDCT_FLOAT;
+      }else{
+        if (jsimd_can_idct_2x2())
+          method_ptr = jsimd_idct_2x2;
+        else
+          method_ptr = jpeg_idct_2x2;
+        method = JDCT_ISLOW;      /* jidctred uses islow-style table */
+      }
       break;
     case 3:
       method_ptr = jpeg_idct_3x3;
       method = JDCT_ISLOW;      /* jidctint uses islow-style table */
       break;
     case 4:
-      if (jsimd_can_idct_4x4())
-        method_ptr = jsimd_idct_4x4;
-      else
-        method_ptr = jpeg_idct_4x4;
-      method = JDCT_ISLOW;      /* jidctred uses islow-style table */
+      if (favor_linear_scaling){
+        method_ptr = jpeg_idct_1_4_8_float;
+        method= JDCT_FLOAT;
+      }else{
+        if (jsimd_can_idct_4x4())
+          method_ptr = jsimd_idct_4x4;
+        else
+          method_ptr = jpeg_idct_4x4;
+        method = JDCT_ISLOW;      /* jidctred uses islow-style table */
+      }
       break;
     case 5:
       method_ptr = jpeg_idct_5x5;

@@ -124,6 +124,10 @@ EXTERN(void) jpeg_idct_2x2
 EXTERN(void) jpeg_idct_1x1
         (j_decompress_ptr cinfo, jpeg_component_info *compptr,
          JCOEFPTR coef_block, JSAMPARRAY output_buf, JDIMENSION output_col);
+EXTERN(void) jpeg_idct_1_4_8_float
+        (j_decompress_ptr cinfo, jpeg_component_info *compptr,
+         JCOEFPTR coef_block, JSAMPARRAY output_buf, JDIMENSION output_col);
+
 EXTERN(void) jpeg_idct_9x9
         (j_decompress_ptr cinfo, jpeg_component_info *compptr,
          JCOEFPTR coef_block, JSAMPARRAY output_buf, JDIMENSION output_col);
