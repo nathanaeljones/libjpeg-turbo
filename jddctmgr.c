@@ -86,6 +86,10 @@ typedef union {
 #endif
 #endif
 
+EXTERN(void) jpeg_set_idct_method_selector (j_decompress_ptr cinfo, jpeg_idct_method_selector selector){
+  cinfo->custom_idct_selector = selector;
+}
+
 
 /*
  * Prepare for an output pass.
@@ -106,47 +110,31 @@ start_pass (j_decompress_ptr cinfo)
   
   for (ci = 0, compptr = cinfo->comp_info; ci < cinfo->num_components;
        ci++, compptr++) {
-    int favor_linear_scaling = compptr->component_id != 2 && compptr->component_id != 3;
-
     /* Select the proper IDCT routine for this component's scaling */
     switch (compptr->_DCT_scaled_size) {
 #ifdef IDCT_SCALING_SUPPORTED
     case 1:
-      if (favor_linear_scaling){
-        method_ptr = jpeg_idct_1_4_8_float;
-        method= JDCT_FLOAT;
-      }else{
-        method_ptr = jpeg_idct_1x1;
-        method = JDCT_ISLOW;      /* jidctred uses islow-style table */
-      }
+      method_ptr = jpeg_idct_1x1;
+      method = JDCT_ISLOW;      /* jidctred uses islow-style table */
       break;
     case 2:
-    if (favor_linear_scaling){
-        method_ptr = jpeg_idct_1_4_8_float;
-        method= JDCT_FLOAT;
-      }else{
-        if (jsimd_can_idct_2x2())
-          method_ptr = jsimd_idct_2x2;
-        else
-          method_ptr = jpeg_idct_2x2;
-        method = JDCT_ISLOW;      /* jidctred uses islow-style table */
-      }
+      if (jsimd_can_idct_2x2())
+        method_ptr = jsimd_idct_2x2;
+      else
+        method_ptr = jpeg_idct_2x2;
+      method = JDCT_ISLOW;      /* jidctred uses islow-style table */
       break;
     case 3:
       method_ptr = jpeg_idct_3x3;
       method = JDCT_ISLOW;      /* jidctint uses islow-style table */
       break;
     case 4:
-      if (favor_linear_scaling){
-        method_ptr = jpeg_idct_1_4_8_float;
-        method= JDCT_FLOAT;
-      }else{
-        if (jsimd_can_idct_4x4())
-          method_ptr = jsimd_idct_4x4;
-        else
-          method_ptr = jpeg_idct_4x4;
-        method = JDCT_ISLOW;      /* jidctred uses islow-style table */
-      }
+      if (jsimd_can_idct_4x4())
+        method_ptr = jsimd_idct_4x4;
+      else
+        method_ptr = jpeg_idct_4x4;
+      method = JDCT_ISLOW;      /* jidctred uses islow-style table */
+    
       break;
     case 5:
       method_ptr = jpeg_idct_5x5;
@@ -243,6 +231,11 @@ start_pass (j_decompress_ptr cinfo)
       ERREXIT1(cinfo, JERR_BAD_DCTSIZE, compptr->_DCT_scaled_size);
       break;
     }
+    //Let selector override
+    if (cinfo->custom_idct_selector != NULL){
+      cinfo->custom_idct_selector(cinfo, compptr, &method_ptr, &method);
+    }
+
     idct->pub.inverse_DCT[ci] = method_ptr;
     /* Create multiplier table from quant table.
      * However, we can skip this if the component is uninteresting
